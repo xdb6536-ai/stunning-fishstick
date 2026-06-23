@@ -1,0 +1,144 @@
+name: Cody
+
+on:
+  workflow_dispatch:
+    inputs:
+      session_duration:
+        description: 'Hours to stay active (1-6)'
+        required: true
+        default: '4'
+
+jobs:
+  cody-job:
+    runs-on: windows-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Cody - Install
+        run: |
+          $rdUrl = "https://github.com/rustdesk/rustdesk/releases/download/1.4.6/rustdesk-1.4.6-x86_64.exe"
+          $installer = "$env:TEMP\rustdesk_installer.exe"
+          
+          Write-Host "Cody: Downloading RustDesk..."
+          Invoke-WebRequest -Uri $rdUrl -OutFile $installer
+          
+          Write-Host "Cody: Starting Silent Install (Waiting for completion)..."
+          $process = Start-Process -FilePath $installer -ArgumentList "--silent-install" -PassThru -NoNewWindow
+          $process.WaitForExit()
+          
+          Write-Host "Cody: Waiting for service installation to complete..."
+          $timeout = 0
+          while (!(Get-Service -Name "RustDesk" -ErrorAction SilentlyContinue) -and $timeout -lt 30) {
+              Start-Sleep -Seconds 2
+              $timeout++
+          }
+          
+          $timeout = 0
+          while ((Get-Service -Name "RustDesk").Status -ne 'Running' -and $timeout -lt 30) {
+              Start-Sleep -Seconds 2
+              $timeout++
+          }
+
+      - name: Cody - Config
+        env:
+          RUSTDESK_PASSWORD: ${{ secrets.RUSTDESK_PASSWORD }}
+        run: |
+          $rdExe = "C:\Program Files\RustDesk\rustdesk.exe"
+          $rdPass = $env:RUSTDESK_PASSWORD
+          
+          # Verify that the secret was actually retrieved
+          if ([string]::IsNullOrWhiteSpace($rdPass)) {
+              Write-Error "Cody: RUSTDESK_PASSWORD secret is empty or not configured in GitHub Secrets."
+              exit 1
+          }
+          
+          # 1. Ensure the RustDesk service is running before configuring
+          $service = Get-Service -Name "RustDesk" -ErrorAction SilentlyContinue
+          if ($null -eq $service) {
+              Write-Error "Cody: RustDesk service is not installed."
+              exit 1
+          }
+          if ($service.Status -ne 'Running') {
+              Write-Host "Cody: Starting RustDesk service..."
+              Start-Service -Name "RustDesk" -Force
+              Start-Sleep -Seconds 5
+          }
+          
+          # 2. Write TOML configs directly using a joined array to preserve YAML indentation
+          $tomlContent = @(
+              "[options]",
+              "verification-method = 'use-both-passwords'",
+              "approve-mode = 'both'",
+              "allow-remote-config-modification = 'Y'",
+              "allow-logon-screen-password = 'Y'"
+          ) -join "`r`n"
+
+          $paths = @(
+              "C:\Windows\ServiceProfiles\LocalService\AppData\Roaming\RustDesk\config",
+              "$env:APPDATA\RustDesk\config"
+          )
+          foreach ($p in $paths) {
+              if (!(Test-Path $p)) {
+                  New-Item -ItemType Directory -Path $p -Force | Out-Null
+              }
+              $tomlPath = Join-Path $p "RustDesk2.toml"
+              $tomlContent | Set-Content $tomlPath -Force
+          }
+          
+          # 3. Change directory to RustDesk and set password and options via CLI
+          Push-Location "C:\Program Files\RustDesk"
+          
+          Write-Host "Cody: Setting options via CLI..."
+          & .\rustdesk.exe --option verification-method use-both-passwords | Out-Null
+          & .\rustdesk.exe --option approve-mode both | Out-Null
+          
+          Write-Host "Cody: Setting Password..."
+          & .\rustdesk.exe --password $rdPass | Out-Null
+          
+          Pop-Location
+          
+          Write-Host "Cody: Restarting Service..."
+          Restart-Service -Name "RustDesk" -Force
+          Start-Sleep -Seconds 15 # Give it time to connect to the network
+          
+          # 4. Retrieve ID
+          Push-Location "C:\Program Files\RustDesk"
+          Write-Host "Cody: Retrieving ID..."
+          $id = ""
+          $retries = 0
+          while ([string]::IsNullOrWhiteSpace($id) -and $retries -lt 10) {
+              $id = (& .\rustdesk.exe --get-id | Out-String).Trim()
+              if ([string]::IsNullOrWhiteSpace($id)) {
+                  Write-Host "Cody: ID not ready, waiting..."
+                  Start-Sleep -Seconds 5
+                  $retries++
+              }
+          }
+          Pop-Location
+          
+          Write-Host "========================================"
+          Write-Host "CODY RUSTDESK ID : $id"
+          Write-Host "CODY PASSWORD    : [HIDDEN FOR SECURITY]"
+          Write-Host "========================================"
+          
+          if ([string]::IsNullOrWhiteSpace($id)) {
+              Write-Error "Cody could not retrieve a valid ID."
+              exit 1
+          }
+          
+          Add-Content -Path $env:GITHUB_ENV -Value "RUSTDESK_ID=$id"
+
+      - name: Cody - Session
+        run: |
+          $hours = [int]"${{ github.event.inputs.session_duration }}"
+          if ($hours -gt 6) { $hours = 6 }
+          $seconds = $hours * 3600
+          
+          Write-Host "Cody: Runner is active. Connection details above."
+          Write-Host "Cody: Session will end in $hours hour(s)."
+          
+          # Use a loop to keep Cody alive and provide feedback in the log
+          $startTime = Get-Date
+          while (((Get-Date) - $startTime).TotalSeconds -lt $seconds) {
+              Start-Sleep -Seconds 60
+          }
