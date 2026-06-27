@@ -41,14 +41,14 @@ jobs:
 
       - name: Cody - Config
         env:
-          RUSTDESK_PASSWORD: ${{ secrets.RUSTDESK_PASSWORD }}
+          RUSTDESK_PASSWORDD: ${{ secrets.RUSTDESK_PASSWORDD }}
         run: |
           $rdExe = "C:\Program Files\RustDesk\rustdesk.exe"
-          $rdPass = $env:RUSTDESK_PASSWORD
+          $rdPass = $env:RUSTDESK_PASSWORDD
           
           # Verify that the secret was actually retrieved
           if ([string]::IsNullOrWhiteSpace($rdPass)) {
-              Write-Error "Cody: RUSTDESK_PASSWORD secret is empty or not configured in GitHub Secrets."
+              Write-Error "Cody: RUSTDESK_PASSWORDD secret is empty or not configured in GitHub Secrets."
               exit 1
           }
           
